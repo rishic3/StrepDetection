@@ -222,7 +222,7 @@ eval = False
 
 if eval:
     torch.cuda.empty_cache()
-    output_dir = "output_images"
+    output_dir = "data/output_images"
     categories = ["True_Negatives", "False_Negatives", "True_Positives", "False_Positives"]
     for category in categories:
         os.makedirs(os.path.join(output_dir, category), exist_ok=True)
