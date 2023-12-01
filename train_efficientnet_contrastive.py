@@ -298,6 +298,8 @@ if num_epochs > 0:
 
 print('Finished Training')
 
+#test
+
 """EVAL"""
 
 eval = False
