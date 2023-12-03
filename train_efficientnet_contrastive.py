@@ -19,6 +19,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from train_efficientnet import StrepDataset
 
 # use gpu 1
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -28,7 +29,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SYMPTOM = 'Pus'
 NUM_CLASSES = 1
 SEED = 30 
-BATCH_SIZE = 8
+BATCH_SIZE = 12
 
 class CustomEfficientNet(nn.Module):
     def __init__(self, model_variant):
@@ -55,36 +56,38 @@ model_variant = "efficientnet-b3"
 efficientnet = CustomEfficientNet(model_variant)
 efficientnet.to(device)
 
-class StrepDataset(Dataset):
-    def __init__(self, csv_file, transform=None):
-        self.data = pd.read_csv(csv_file)
-        self.transform = transform
+class ContrastiveStrepDataset(Dataset):
+    def __init__(self, base_dataset):
+        """
+        Initialize the wrapper with the base dataset (StrepDataset instance).
+        """
+        self.base_dataset = base_dataset
 
     def __len__(self):
-        return len(self.data)
+        """
+        The length of the dataset is the same as the base dataset.
+        """
+        return len(self.base_dataset)
 
     def __getitem__(self, idx):
-        # Randomly select another index to form a pair
-        idx2 = random.choice(range(len(self.data)))
+        """
+        Returns a pair of images and a label indicating whether they are similar (1) or dissimilar (0).
+        """
+        # Get the first image and label
+        img1, label1 = self.base_dataset[idx]
 
-        # Load first image and label
-        img_name = self.data.at[idx, 'Image_Path']
-        image1 = Image.open(img_name)
-        label1 = int(self.data.at[idx, SYMPTOM])
+        # Randomly select another index for the second image
+        # Ensure that the second index is different from the first
+        idx2 = idx
+        while idx2 == idx:
+            idx2 = random.choice(range(len(self.base_dataset)))
 
-        # Load second image and label
-        img_name2 = self.data.at[idx2, 'Image_Path']
-        image2 = Image.open(img_name2)
-        label2 = int(self.data.at[idx2, SYMPTOM])
+        img2, label2 = self.base_dataset[idx2]
 
         # Determine if the pair is similar (1) or dissimilar (0)
         pair_label = 1 if label1 == label2 else 0
 
-        if self.transform:
-            image1 = self.transform(image1)
-            image2 = self.transform(image2)
-
-        return (image1, image2), (label1, pair_label)
+        return (img1, img2), pair_label
 
 # Transform just for converting the image to tensor
 to_tensor_transform = transforms.Compose([
@@ -93,7 +96,7 @@ to_tensor_transform = transforms.Compose([
 ])
 
 # Create datasets without normalization for computing mean and std
-train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
+train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
 data_loader_for_mean_std = DataLoader(train_dataset_for_mean_std, batch_size=64, shuffle=False, num_workers=4)
 
 # Compute mean and std
@@ -119,14 +122,17 @@ transform = transforms.Compose([
 ])
 
 # Create datasets and dataloaders
-train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
-test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+base_train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+base_test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+
+train_dataset = ContrastiveStrepDataset(base_train_dataset)
+test_dataset = ContrastiveStrepDataset(base_test_dataset)
 
 sample_weights = torch.ones(len(train_dataset))
 sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=lambda x: zip(*x))
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=lambda x: zip(*x))
 
 """Training Loop"""
 
@@ -173,9 +179,11 @@ def evaluate(model, test_loader):
     predicted_probs = []
     
     with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
+        for ((inputs1, inputs2), _), labels in test_loader:
+            inputs = torch.cat([inputs1, inputs2]).to(device)
+            labels = labels.to(device).repeat(2)  # Duplicate labels for both images in pair
+
+            outputs = model(inputs)[1].squeeze()  # Get only the predictions
             predicted_probs.extend(torch.sigmoid(outputs).cpu().numpy())
             true_labels.extend(labels.cpu().numpy())
 
@@ -249,7 +257,7 @@ for epoch in range(num_epochs):
 
     global_idx_offset += len(train_loader.dataset)
 
-    for (inputs1, inputs2), (labels, pair_labels) in train_loader:
+    for ((inputs1, inputs2), pair_labels), labels in train_loader:
         inputs1, inputs2 = inputs1.to(device), inputs2.to(device)
         labels, pair_labels = labels.to(device), pair_labels.to(device)
 
@@ -259,15 +267,16 @@ for epoch in range(num_epochs):
         embeddings1, preds1 = efficientnet(inputs1)
         embeddings2, preds2 = efficientnet(inputs2)
 
-        # Compute classification loss (assuming binary classification)
-        loss1 = criterion(preds1.squeeze(), labels.float())
-        loss2 = criterion(preds2.squeeze(), labels.float())
+        # Classification loss for each image in the pair
+        loss_class1 = criterion(preds1.squeeze(), labels.float())
+        loss_class2 = criterion(preds2.squeeze(), labels.float())
+        loss_class = (loss_class1 + loss_class2) / 2
 
-        # Compute contrastive loss
-        cont_loss = contrastive_loss(embeddings1, embeddings2, pair_labels)
+        # Contrastive loss
+        cont_loss = contrastive_loss(embeddings1, embeddings2, pair_labels.float())
 
         # Combine losses
-        total_loss = loss1 + loss2 + cont_loss
+        total_loss = loss_class + cont_loss
 
         total_loss.backward()
         optimizer.step()
@@ -292,13 +301,11 @@ for epoch in range(num_epochs):
         if stagnant_epochs == patience:
             break
 
-save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_mining_{mining}.pth'
+save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_contrastive.pth'
 if num_epochs > 0:
     torch.save(best_model, save_path)
 
 print('Finished Training')
-
-#test
 
 """EVAL"""
 

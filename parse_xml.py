@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 
 # Path to your XML file
-xml_file = '/data/datasets/rishi/symptom_classification/data/annotations_full.xml'
+xml_file = '/data/datasets/rishi/symptom_classification/data/strepannotations_12-1.xml'
 
 # Parse the XML file
 tree = ET.parse(xml_file)
@@ -53,7 +53,7 @@ for track in root.findall('track'):
 df = pd.DataFrame(data)
 
 # Export the DataFrame to a CSV file
-csv_file = '/data/datasets/rishi/symptom_classification/data/cvat_symptom_labels.csv'
+csv_file = '/data/datasets/rishi/symptom_classification/data/cvat_labels_12-1.csv'
 df.to_csv(csv_file, index=False)
 
 print(f'Data exported to {csv_file}')

@@ -62,7 +62,7 @@ to_tensor_transform = transforms.Compose([
 ])
 
 # Create datasets without normalization for computing mean and std
-train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
+train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
 data_loader_for_mean_std = DataLoader(train_dataset_for_mean_std, batch_size=64, shuffle=False, num_workers=4)
 
 # Compute mean and std
@@ -88,8 +88,8 @@ transform = transforms.Compose([
 ])
 
 # Create datasets and dataloaders
-train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
-test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
 
 sample_weights = torch.ones(len(train_dataset))
 sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
