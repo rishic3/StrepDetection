@@ -29,7 +29,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SYMPTOM = 'Pus'
 NUM_CLASSES = 1
 SEED = 30 
-BATCH_SIZE = 10
+BATCH_SIZE = 8
 
 class StrepDataset(Dataset):
     def __init__(self, csv_file, transform=None):
@@ -80,7 +80,7 @@ class CustomEfficientNet(nn.Module):
 
         return embeddings, preds
 
-model_variant = "efficientnet-b2"
+model_variant = "efficientnet-b3"
 efficientnet = CustomEfficientNet(model_variant)
 efficientnet.to(device)
 
@@ -165,7 +165,7 @@ test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 """Training Loop"""
 
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(efficientnet.parameters(), lr=0.0001)
+optimizer = optim.Adam(efficientnet.parameters(), lr=0.0009)
 
 '''NUM EPOCHS'''
 num_epochs = 100
@@ -174,10 +174,10 @@ best_combined_metric = 0.0
 best_accuracy = 0.0 
 best_auc = 0.0
 best_model = None
-MINING = True
+MINING = False
 mining_start_epoch = 5
 
-mining_freq = 2 if MINING else num_epochs * 10
+mining_freq = 5 if MINING else num_epochs * 10
 
 def evaluate_multiclass(model, test_loader):
     model.eval()
@@ -352,7 +352,7 @@ print('Finished Training')
 
 """EVAL"""
 
-eval = False
+eval = True
 
 '''Saving example images, labels + predictions, saliency maps'''
 
@@ -370,13 +370,13 @@ if eval:
         return tensor
 
     '''Define model and gradcam'''
-
+    
     efficientnet = EfficientNetBN(model_variant, spatial_dims=2)
     num_ftrs = efficientnet._fc.in_features
     efficientnet._fc = nn.Linear(num_ftrs, NUM_CLASSES)
 
     eval_save_path = save_path
-    #eval_save_path = '/data/datasets/rishi/symptom_classification/best_efficientnet_Pus_acc_0.832_auc_0.906_seed_30_mining_False.pth'
+    #eval_save_path = '/data/datasets/rishi/symptom_classification/ckpts/best_efficientnet_Pus_acc_0.806_auc_0.842_mining_True.pth'
     efficientnet.load_state_dict(torch.load(eval_save_path))
     efficientnet.to(device)
 
@@ -386,10 +386,28 @@ if eval:
 
     test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
+    global_min, global_max = float('inf'), -float('inf')
+
+    for inputs, labels in test_loader:
+        inputs = inputs.to(device)
+        outputs = efficientnet(inputs).squeeze()
+        predicted_probs = torch.sigmoid(outputs).detach()
+
+        for i in range(inputs.size(0)):
+            image = inputs[i].unsqueeze(0)
+            grayscale_cam = cam(input_tensor=image.float())
+            grayscale_cam = grayscale_cam[0, :]
+
+            # Update global min and max
+            global_min = min(global_min, grayscale_cam.min())
+            global_max = max(global_max, grayscale_cam.max())
+
+    # Second Pass: Normalize, Generate CAMs and Save Images
     true_pos_count = 0
     true_neg_count = 0
     false_pos_count = 0
     false_neg_count = 0
+
     for batch_idx, (inputs, labels) in enumerate(test_loader):
         inputs, labels = inputs.to(device), labels.to(device)
         outputs = efficientnet(inputs).squeeze()
@@ -405,31 +423,33 @@ if eval:
             grayscale_cam = cam(input_tensor=image.unsqueeze(0).to(device).float())
             grayscale_cam = grayscale_cam[0, :]
 
+            # Normalize the CAM
+            grayscale_cam = (grayscale_cam - global_min) / (global_max - global_min)
+
             # De-normalize and prepare image for saving
-            image_for_cam = denormalize(image, mean, std)  # Replace 'mean' and 'std' with your values
+            image_for_cam = denormalize(image, mean, std)
             image_for_cam = image_for_cam.permute(1, 2, 0).cpu().numpy()
 
             # Apply CAM mask
             cam_image = show_cam_on_image(image_for_cam, grayscale_cam, use_rgb=True)
 
             # Determine the category and save the image and its CAM
-            if true_label == pred_label == 1:
-                category = "True_Positives"
-                true_pos_count += 1
-            elif true_label == pred_label == 0:
-                category = "True_Negatives"
-                true_neg_count += 1
-            elif true_label == 1 and pred_label == 0:
-                category = "False_Negatives"
-                false_neg_count += 1
-            elif true_label == 0 and pred_label == 1:
-                category = "False_Positives"
-                false_pos_count += 1
-            
+            category = categories[pred_label * 2 + true_label]
             image_path = os.path.join(output_dir, category, f"image_{i}-{batch_idx}.png")
             cam_path = os.path.join(output_dir, category, f"cam_{i}-{batch_idx}.png")
             plt.imsave(image_path, image_for_cam)
             plt.imsave(cam_path, cam_image)
 
+            if true_label == pred_label == 1:
+                true_pos_count += 1
+            elif true_label == pred_label == 0:
+                true_neg_count += 1
+            elif true_label == 1 and pred_label == 0:
+                false_neg_count += 1
+            elif true_label == 0 and pred_label == 1:
+                false_pos_count += 1
+
+    # Calculate and print metrics
+    accuracy = (true_pos_count + true_neg_count) / (true_pos_count + true_neg_count + false_pos_count + false_neg_count)
     print(f"True Positives: {true_pos_count}, True Negatives: {true_neg_count}, False Positives: {false_pos_count}, False Negatives: {false_neg_count}")
-    print(f"Accuracy: {(true_pos_count + true_neg_count) / (true_pos_count + true_neg_count + false_pos_count + false_neg_count)}")
+    print(f"Accuracy: {accuracy}")
