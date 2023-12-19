@@ -7,8 +7,9 @@ import os
 import pandas as pd
 import numpy as np
 import random
+import torch.nn.functional as F
 from torchvision import transforms
-from torchvision.transforms import functional as F
+#from torchvision.transforms import functional as F
 from torchvision.datasets import ImageFolder
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -30,31 +31,6 @@ NUM_CLASSES = 1
 SEED = 30 
 BATCH_SIZE = 8
 
-class CustomEfficientNet(nn.Module):
-    def __init__(self, model_variant):
-        super(CustomEfficientNet, self).__init__()
-        # Initialize the EfficientNet from MONAI
-        self.efficientnet = EfficientNetBN(model_variant, spatial_dims=2, in_channels=3, num_classes=1)
-        
-        # Extract the feature extractor part and the classifier part
-        # This might require checking the source code of MONAI's EfficientNetBN to correctly identify these parts
-        self.features = nn.Sequential(*list(self.efficientnet.children())[:-1])
-        self.classifier = list(self.efficientnet.children())[-1]
-
-    def forward(self, x):
-        # Extract features
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        # Get embeddings
-        embeddings = x
-        # Class predictions
-        preds = self.classifier(embeddings)
-        return embeddings, preds
-    
-model_variant = "efficientnet-b3"
-efficientnet = CustomEfficientNet(model_variant)
-efficientnet.to(device)
-
 class StrepDataset(Dataset):
     def __init__(self, csv_file, transform=None):
         self.data = pd.read_csv(csv_file)
@@ -64,27 +40,82 @@ class StrepDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        # Randomly select another index to form a pair
-        idx2 = random.choice(range(len(self.data)))
-
-        # Load first image and label
         img_name = self.data.at[idx, 'Image_Path']
-        image1 = Image.open(img_name)
-        label1 = int(self.data.at[idx, SYMPTOM])
+        image = Image.open(img_name)
+        label = int(self.data.at[idx, SYMPTOM])
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, label
 
-        # Load second image and label
-        img_name2 = self.data.at[idx2, 'Image_Path']
-        image2 = Image.open(img_name2)
-        label2 = int(self.data.at[idx2, SYMPTOM])
+class CustomEfficientNet(nn.Module):
+    def __init__(self, model_variant):
+        super(CustomEfficientNet, self).__init__()
+        # Initialize the EfficientNet from MONAI
+        self.efficientnet = EfficientNetBN(model_variant, spatial_dims=2, in_channels=3, num_classes=1)
+
+    def forward(self, x):
+        # Pass the input through EfficientNet up to the _avg_pooling layer
+        x = self.efficientnet._conv_stem(x)
+        x = self.efficientnet._bn0(x)
+        x = self.efficientnet._swish(x)
+
+        # Pass through each MBConvBlock
+        for block in self.efficientnet._blocks:
+            x = block(x)
+
+        x = self.efficientnet._conv_head(x)
+        x = self.efficientnet._bn1(x)
+        x = self.efficientnet._swish(x)
+
+        # The output of this layer can be used as embeddings
+        embeddings = self.efficientnet._avg_pooling(x)
+
+        # Flatten the embeddings for the classifier
+        embeddings_flattened = torch.flatten(embeddings, 1)
+
+        # Pass through the classifier (_fc layer)
+        preds = self.efficientnet._fc(embeddings_flattened)
+
+        return embeddings, preds
+
+model_variant = "efficientnet-b3"
+efficientnet = CustomEfficientNet(model_variant)
+efficientnet.to(device)
+
+class ContrastiveStrepDataset(Dataset):
+    def __init__(self, base_dataset):
+        """
+        Initialize the wrapper with the base dataset (StrepDataset instance).
+        """
+        self.base_dataset = base_dataset
+
+    def __len__(self):
+        """
+        The length of the dataset is the same as the base dataset.
+        """
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        """
+        Returns a pair of images, their individual labels, 
+        and a label indicating whether they are similar (1) or dissimilar (0).
+        """
+        # Get the first image and label
+        img1, label1 = self.base_dataset[idx]
+
+        # Randomly select another index for the second image
+        idx2 = idx
+        while idx2 == idx:
+            idx2 = random.choice(range(len(self.base_dataset)))
+
+        img2, label2 = self.base_dataset[idx2]
 
         # Determine if the pair is similar (1) or dissimilar (0)
         pair_label = 1 if label1 == label2 else 0
 
-        if self.transform:
-            image1 = self.transform(image1)
-            image2 = self.transform(image2)
-
-        return (image1, image2), (label1, pair_label)
+        return (img1, img2), (label1, label2), pair_label
 
 # Transform just for converting the image to tensor
 to_tensor_transform = transforms.Compose([
@@ -93,7 +124,7 @@ to_tensor_transform = transforms.Compose([
 ])
 
 # Create datasets without normalization for computing mean and std
-train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
+train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=to_tensor_transform)
 data_loader_for_mean_std = DataLoader(train_dataset_for_mean_std, batch_size=64, shuffle=False, num_workers=4)
 
 # Compute mean and std
@@ -119,8 +150,11 @@ transform = transforms.Compose([
 ])
 
 # Create datasets and dataloaders
-train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
-test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+base_train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=transform)
+base_test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+
+train_dataset = ContrastiveStrepDataset(base_train_dataset)
+test_dataset = ContrastiveStrepDataset(base_test_dataset)
 
 sample_weights = torch.ones(len(train_dataset))
 sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
@@ -140,10 +174,10 @@ best_combined_metric = 0.0
 best_accuracy = 0.0 
 best_auc = 0.0
 best_model = None
-mining = False
-mining_start_epoch = 10
+MINING = False
+mining_start_epoch = 5
 
-mining_freq = 5 if mining else num_epochs * 10
+mining_freq = 5 if MINING else num_epochs * 10
 
 def evaluate_multiclass(model, test_loader):
     model.eval()
@@ -173,11 +207,19 @@ def evaluate(model, test_loader):
     predicted_probs = []
     
     with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
-            predicted_probs.extend(torch.sigmoid(outputs).cpu().numpy())
-            true_labels.extend(labels.cpu().numpy())
+        for data in test_loader:
+            ((inputs1, inputs2), (labels1, labels2), _) = data
+
+            # Process both images in the pair and concatenate for a batch-wise operation
+            inputs_combined = torch.cat([inputs1, inputs2], dim=0).to(device)
+            labels_combined = torch.cat([labels1, labels2], dim=0).to(device)
+
+            # Get predictions for the combined batch
+            _, outputs_combined = model(inputs_combined)
+            outputs_combined = outputs_combined.squeeze()
+
+            predicted_probs.extend(torch.sigmoid(outputs_combined).cpu().numpy())
+            true_labels.extend(labels_combined.cpu().numpy())
 
     predicted_labels = [1 if prob > 0.5 else 0 for prob in predicted_probs]
 
@@ -185,24 +227,24 @@ def evaluate(model, test_loader):
     f1 = f1_score(true_labels, predicted_labels)
     auc = roc_auc_score(true_labels, predicted_probs)
     
-    # Compute confusion matrix
+    # Compute confusion matrix and other metrics
     tn, fp, fn, tp = confusion_matrix(true_labels, predicted_labels).ravel()
-    
-    # Compute PPV, NPV, sensitivity, and specificity
-    ppv = tp / (tp + fp) if (tp + fp) != 0 else 0
-    npv = tn / (tn + fn) if (tn + fn) != 0 else 0
-    sensitivity = tp / (tp + fn) if (tp + fn) != 0 else 0
-    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0
+    ppv = tp / (tp + fp) if (tp + fp) != 0 else 0  # Positive Predictive Value
+    npv = tn / (tn + fn) if (tn + fn) != 0 else 0  # Negative Predictive Value
+    sensitivity = tp / (tp + fn) if (tp + fn) != 0 else 0  # Sensitivity
+    specificity = tn / (tn + fp) if (tn + fp) != 0 else 0  # Specificity
 
     return accuracy, f1, auc, ppv, npv, sensitivity, specificity
 
 def contrastive_loss(embeddings1, embeddings2, label, margin=1.0):
-    # Normalize embeddings
-    embeddings1 = F.normalize(embeddings1, p=2, dim=1)
-    embeddings2 = F.normalize(embeddings2, p=2, dim=1)
+    # Manually normalize embeddings
+    norm1 = torch.norm(embeddings1, p=2, dim=1, keepdim=True)
+    norm2 = torch.norm(embeddings2, p=2, dim=1, keepdim=True)
+    embeddings1 = embeddings1 / norm1
+    embeddings2 = embeddings2 / norm2
 
     # Cosine similarity
-    cosine_similarity = F.cosine_similarity(embeddings1, embeddings2)
+    cosine_similarity = torch.sum(embeddings1 * embeddings2, dim=1)
 
     # Calculate loss
     loss_similar = (1 - label) * (1 - cosine_similarity).pow(2)  # For similar pairs
@@ -217,41 +259,50 @@ def find_hard_negatives(model, data_loader):
     model.eval()
     hard_negatives_with_conf = []
     with torch.no_grad():
-        for inputs, labels in data_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
-            probabilities = torch.sigmoid(outputs).cpu().numpy()
+        for ((inputs1, inputs2), _, _) in data_loader:
+            inputs1, inputs2 = inputs1.to(device), inputs2.to(device)
+
+            # Forward pass for each image in the pair and combine predictions
+            _, preds1 = model(inputs1)
+            _, preds2 = model(inputs2)
+            preds_combined = torch.cat([preds1, preds2], dim=0).squeeze()
+
+            probabilities = torch.sigmoid(preds_combined).cpu().numpy()
             predictions = (probabilities > 0.5).astype(int)
 
-            # Identify hard negatives (false positives) and their confidences
-            for idx, (pred, prob, label) in enumerate(zip(predictions, probabilities, labels.cpu().numpy())):
-                if label == 0 and pred == 1:
-                    hard_negatives_with_conf.append((idx, prob))  # Store index and confidence
+            # The labels for each pair are combined for hard negative mining
+            for idx, (pred, prob) in enumerate(zip(predictions, probabilities)):
+                if idx % 2 == 0:  # Only consider one image from each pair to avoid duplication
+                    if pred == 1:  # Hard negative identified (assuming label 0 is negative)
+                        hard_negatives_with_conf.append((idx // 2, prob))  # Store pair index and confidence
 
     return hard_negatives_with_conf
 
 global_idx_offset = 0
 stagnant_epochs = 0
-patience = 20
+patience = 40
 
 for epoch in range(num_epochs):
     efficientnet.train()
     running_loss = 0.0
 
-    if mining and epoch % mining_freq == 0 and epoch > (mining_start_epoch - 1):
+    if MINING and epoch % mining_freq == 0 and epoch > (mining_start_epoch - 1):
         hard_neg_indices = find_hard_negatives(efficientnet, train_loader)
         for idx, conf in hard_neg_indices:
-            global_idx = idx + global_idx_offset
+            pair_idx = idx  # Index of the pair
             weight = 2 * conf
-            sample_weights[global_idx] = weight # Increase the weight of hard negatives
+            sample_weights[pair_idx] = weight  # Increase the weight of hard negative pairs
+
         sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler)
 
-    global_idx_offset += len(train_loader.dataset)
+    global_idx_offset += len(train_loader.dataset) // 2  # Divide by 2 as each item is a pair
 
-    for (inputs1, inputs2), (labels, pair_labels) in train_loader:
+    for data in train_loader:
+        ((inputs1, inputs2), (labels1, labels2), pair_labels) = data
         inputs1, inputs2 = inputs1.to(device), inputs2.to(device)
-        labels, pair_labels = labels.to(device), pair_labels.to(device)
+        labels1, labels2 = labels1.to(device), labels2.to(device)
+        pair_labels = pair_labels.to(device)
 
         optimizer.zero_grad()
 
@@ -259,15 +310,16 @@ for epoch in range(num_epochs):
         embeddings1, preds1 = efficientnet(inputs1)
         embeddings2, preds2 = efficientnet(inputs2)
 
-        # Compute classification loss (assuming binary classification)
-        loss1 = criterion(preds1.squeeze(), labels.float())
-        loss2 = criterion(preds2.squeeze(), labels.float())
+        # Compute binary classification loss for each image
+        loss_class1 = criterion(preds1.squeeze(), labels1.float())
+        loss_class2 = criterion(preds2.squeeze(), labels2.float())
+        loss_class = (loss_class1 + loss_class2) / 2
 
         # Compute contrastive loss
-        cont_loss = contrastive_loss(embeddings1, embeddings2, pair_labels)
+        cont_loss = contrastive_loss(embeddings1, embeddings2, pair_labels.float())
 
         # Combine losses
-        total_loss = loss1 + loss2 + cont_loss
+        total_loss = loss_class + cont_loss
 
         total_loss.backward()
         optimizer.step()
@@ -289,10 +341,10 @@ for epoch in range(num_epochs):
         stagnant_epochs = 0
     else:
         stagnant_epochs += 1
-        if stagnant_epochs == patience:
-            break
+    if stagnant_epochs == patience:
+        break
 
-save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_mining_{mining}.pth'
+save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_mining_{MINING}_contrastive.pth'
 if num_epochs > 0:
     torch.save(best_model, save_path)
 
@@ -300,7 +352,7 @@ print('Finished Training')
 
 """EVAL"""
 
-eval = False
+eval = True
 
 '''Saving example images, labels + predictions, saliency maps'''
 
@@ -318,13 +370,13 @@ if eval:
         return tensor
 
     '''Define model and gradcam'''
-
+    
     efficientnet = EfficientNetBN(model_variant, spatial_dims=2)
     num_ftrs = efficientnet._fc.in_features
     efficientnet._fc = nn.Linear(num_ftrs, NUM_CLASSES)
 
     eval_save_path = save_path
-    #eval_save_path = '/data/datasets/rishi/symptom_classification/best_efficientnet_Pus_acc_0.832_auc_0.906_seed_30_mining_False.pth'
+    #eval_save_path = '/data/datasets/rishi/symptom_classification/ckpts/best_efficientnet_Pus_acc_0.806_auc_0.842_mining_True.pth'
     efficientnet.load_state_dict(torch.load(eval_save_path))
     efficientnet.to(device)
 
@@ -334,10 +386,28 @@ if eval:
 
     test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
+    global_min, global_max = float('inf'), -float('inf')
+
+    for inputs, labels in test_loader:
+        inputs = inputs.to(device)
+        outputs = efficientnet(inputs).squeeze()
+        predicted_probs = torch.sigmoid(outputs).detach()
+
+        for i in range(inputs.size(0)):
+            image = inputs[i].unsqueeze(0)
+            grayscale_cam = cam(input_tensor=image.float())
+            grayscale_cam = grayscale_cam[0, :]
+
+            # Update global min and max
+            global_min = min(global_min, grayscale_cam.min())
+            global_max = max(global_max, grayscale_cam.max())
+
+    # Second Pass: Normalize, Generate CAMs and Save Images
     true_pos_count = 0
     true_neg_count = 0
     false_pos_count = 0
     false_neg_count = 0
+
     for batch_idx, (inputs, labels) in enumerate(test_loader):
         inputs, labels = inputs.to(device), labels.to(device)
         outputs = efficientnet(inputs).squeeze()
@@ -353,31 +423,33 @@ if eval:
             grayscale_cam = cam(input_tensor=image.unsqueeze(0).to(device).float())
             grayscale_cam = grayscale_cam[0, :]
 
+            # Normalize the CAM
+            grayscale_cam = (grayscale_cam - global_min) / (global_max - global_min)
+
             # De-normalize and prepare image for saving
-            image_for_cam = denormalize(image, mean, std)  # Replace 'mean' and 'std' with your values
+            image_for_cam = denormalize(image, mean, std)
             image_for_cam = image_for_cam.permute(1, 2, 0).cpu().numpy()
 
             # Apply CAM mask
             cam_image = show_cam_on_image(image_for_cam, grayscale_cam, use_rgb=True)
 
             # Determine the category and save the image and its CAM
-            if true_label == pred_label == 1:
-                category = "True_Positives"
-                true_pos_count += 1
-            elif true_label == pred_label == 0:
-                category = "True_Negatives"
-                true_neg_count += 1
-            elif true_label == 1 and pred_label == 0:
-                category = "False_Negatives"
-                false_neg_count += 1
-            elif true_label == 0 and pred_label == 1:
-                category = "False_Positives"
-                false_pos_count += 1
-            
+            category = categories[pred_label * 2 + true_label]
             image_path = os.path.join(output_dir, category, f"image_{i}-{batch_idx}.png")
             cam_path = os.path.join(output_dir, category, f"cam_{i}-{batch_idx}.png")
             plt.imsave(image_path, image_for_cam)
             plt.imsave(cam_path, cam_image)
 
+            if true_label == pred_label == 1:
+                true_pos_count += 1
+            elif true_label == pred_label == 0:
+                true_neg_count += 1
+            elif true_label == 1 and pred_label == 0:
+                false_neg_count += 1
+            elif true_label == 0 and pred_label == 1:
+                false_pos_count += 1
+
+    # Calculate and print metrics
+    accuracy = (true_pos_count + true_neg_count) / (true_pos_count + true_neg_count + false_pos_count + false_neg_count)
     print(f"True Positives: {true_pos_count}, True Negatives: {true_neg_count}, False Positives: {false_pos_count}, False Negatives: {false_neg_count}")
-    print(f"Accuracy: {(true_pos_count + true_neg_count) / (true_pos_count + true_neg_count + false_pos_count + false_neg_count)}")
+    print(f"Accuracy: {accuracy}")

@@ -2,12 +2,13 @@ import os
 import pandas as pd
 from PIL import Image
 from sklearn.model_selection import train_test_split
+import glob
 
 file_path = "/data/datasets/rishi/symptom_classification/data/training_review_tc_3.14.23.xlsx"
 df = pd.read_excel(file_path)
 
 SYMPTOM = 'Pus'
-SEED = 30
+SEED = 1
 
 # Remove missing entries (for now, just tonsil size)
 df = df[df[SYMPTOM] != 99]
@@ -46,10 +47,6 @@ columns_to_keep = ['Patient_ID', 'Image_Path', 'Mallampati', 'In Focus', 'Use to
 train_df = train_df[columns_to_keep]
 test_df = test_df[columns_to_keep]
 
-# Save the train and test dataframe as CSV
-train_csv_path = f'/data/datasets/rishi/data/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv'
-test_csv_path = f'/data/datasets/rishi/data/symptom_classification/test_data_{SYMPTOM}_{SEED}.csv'
-
 image_sizes = []
 
 for index, row in train_df.iterrows():
@@ -63,6 +60,10 @@ average_height = sum([size[1] for size in image_sizes]) / len(image_sizes)
 
 print("average width, height:", average_width, average_height)
 print("max width, height:", max_width, max_height)
+
+# Save the train and test dataframe as CSV
+train_csv_path = f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv'
+test_csv_path = f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv'
 
 train_df.to_csv(train_csv_path, index=False)
 test_df.to_csv(test_csv_path, index=False)
