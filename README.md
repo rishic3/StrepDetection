@@ -16,4 +16,7 @@ Implementing strategies (hard-negative mining, contrastive learning) to combat l
    * Follow the steps in `data_process.ipynb`.
    * This will merge the annotations from the `.xlsx` training review with the CVAT labels, checking for any overlap.
 
+## Model Checkpoints:
+[OneDrive folder](https://livejohnshopkins-my.sharepoint.com/:f:/g/personal/rchand18_jh_edu/Eqpi0aQnp_ZNmqp5sNe990EBUEEEuu3CyJAAGzhS831qXQ?e=kVGbqF) containing model checkpoints.  
+
 Authored by Rishi Chandra, rchand18@jhu.edu, as part of the [ARCADE Lab](https://arcade.cs.jhu.edu/) at Johns Hopkins University. 
