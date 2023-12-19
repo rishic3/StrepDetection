@@ -24,13 +24,13 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # model definition
-model_variant = "efficientnet-b3"
+model_variant = "efficientnet-b2"
 efficientnet = EfficientNetBN(model_variant, spatial_dims=2)
 
 # task definition
 SYMPTOM = 'Pus'
 NUM_CLASSES = 1
-SEED = 30 
+SEED = 1
 BATCH_SIZE = 8
 num_ftrs = efficientnet._fc.in_features
 efficientnet._fc = nn.Linear(num_ftrs, NUM_CLASSES)
@@ -62,7 +62,7 @@ to_tensor_transform = transforms.Compose([
 ])
 
 # Create datasets without normalization for computing mean and std
-train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=to_tensor_transform)
+train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
 data_loader_for_mean_std = DataLoader(train_dataset_for_mean_std, batch_size=64, shuffle=False, num_workers=4)
 
 # Compute mean and std
@@ -89,8 +89,8 @@ transform = transforms.Compose([
 
 # Create datasets and dataloaders
 #train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
-train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=transform)
-test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
 
 sample_weights = torch.ones(len(train_dataset))
 sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
@@ -122,7 +122,7 @@ def evaluate(model, test_loader):
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
+            outputs = model(inputs).squeeze(1)
             predicted_probs.extend(torch.sigmoid(outputs).cpu().numpy())
             true_labels.extend(labels.cpu().numpy())
 
@@ -163,7 +163,7 @@ def find_hard_negatives(model, data_loader, global_idx_offset):
 
 global_idx_offset = 0
 stagnant_epochs = 0
-patience = 15
+patience = 20
 hard_negatives = []
 store_hard_negatives = True
 
@@ -190,7 +190,11 @@ for epoch in range(num_epochs):
         global_idx_offset += len(inputs)
         
         outputs = efficientnet(inputs)
-        loss = criterion(outputs.squeeze(), labels.float())
+
+        if outputs.shape[0] != labels.shape[0]:
+            raise ValueError(f"Dimension mismatch: outputs {outputs.shape}, labels {labels.shape}")
+                
+        loss = criterion(outputs.squeeze(1), labels.float())
         loss.backward()
         optimizer.step()
 
@@ -207,11 +211,13 @@ for epoch in range(num_epochs):
         best_accuracy = accuracy
         best_auc = auc
         best_model = efficientnet.state_dict()
+        print("updating model at epoch {}".format(epoch + 1))
         stagnant_epochs = 0
     else:
         stagnant_epochs += 1
-        if stagnant_epochs == patience:
-            break
+        
+    if stagnant_epochs == patience:
+        break
 
 save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_mining_{mining}_combined.pth'
 if num_epochs > 0:
@@ -251,8 +257,8 @@ if eval:
     num_ftrs = efficientnet._fc.in_features
     efficientnet._fc = nn.Linear(num_ftrs, NUM_CLASSES)
 
-    #eval_save_path = save_path
-    eval_save_path = '/data/datasets/rishi/symptom_classification/ckpts/best_efficientnet-b3_Pus_acc_0.861_auc_0.922_seed_30_mining_False.pth'
+    eval_save_path = save_path
+    #eval_save_path = '/data/datasets/rishi/symptom_classification/ckpts/best_efficientnet-b3_Pus_acc_0.861_auc_0.922_seed_30_mining_False.pth'
     efficientnet.load_state_dict(torch.load(eval_save_path))
     efficientnet.to(device)
 

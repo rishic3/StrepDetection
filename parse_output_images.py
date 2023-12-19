@@ -37,6 +37,6 @@ def sample_images_and_cams(src_directory, dest_directory, sample_size=4):
             print(f"Copied {src_image_path} and {src_cam_path} to {dest_subdir_path}")
 
 # Specify the source and destination directories
-src_directory = "/data/datasets/rishi/symptom_classification/output_images"  # Replace with the path to your 'output_images' directory
-dest_directory = "/data/datasets/rishi/symptom_classification/output_image_samples"  # Replace with your desired destination directory path
+src_directory = "/data/datasets/rishi/symptom_classification/data/output_images_acc_0.822_auc_0.911/"  # Replace with the path to your 'output_images' directory
+dest_directory = "/data/datasets/rishi/symptom_classification/data/output_image_samples/"  # Replace with your desired destination directory path
 sample_images_and_cams(src_directory, dest_directory)

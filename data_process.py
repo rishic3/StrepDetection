@@ -2,14 +2,13 @@ import os
 import pandas as pd
 from PIL import Image
 from sklearn.model_selection import train_test_split
+import glob
 
 file_path = "/data/datasets/rishi/symptom_classification/data/training_review_tc_3.14.23.xlsx"
 df = pd.read_excel(file_path)
 
-cvat_path = "/data/datasets/rishi/data/cvat_labels_12-1.csv"
-
 SYMPTOM = 'Pus'
-SEED = 30
+SEED = 1
 
 # Remove missing entries (for now, just tonsil size)
 df = df[df[SYMPTOM] != 99]
@@ -19,9 +18,6 @@ df['Patient_ID'] = df['Frame Name'].str.extract(r'^(.*?)-frame_')
 df['Frame'] = df['Frame Name'].str.extract(r'(frame_\d+)')
 
 print("Number of unique patients:", len(df['Patient_ID'].unique()))
-
-if cvat_path:
-    cvat_df = pd.read_csv(file_path)
 
 # Compute the image paths based on patient IDs and frame names
 df['Image_Path'] = '/data/datasets/rishi/cropped_frames/' + df['Patient_ID'] + '/' + df['Frame'] + '.jpg'
@@ -66,8 +62,8 @@ print("average width, height:", average_width, average_height)
 print("max width, height:", max_width, max_height)
 
 # Save the train and test dataframe as CSV
-train_csv_path = f'/data/datasets/rishi/data/symptom_classification/train_data_{SYMPTOM}_{SEED}.csv'
-test_csv_path = f'/data/datasets/rishi/data/symptom_classification/test_data_{SYMPTOM}_{SEED}.csv'
+train_csv_path = f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv'
+test_csv_path = f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv'
 
 train_df.to_csv(train_csv_path, index=False)
 test_df.to_csv(test_csv_path, index=False)

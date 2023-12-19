@@ -124,7 +124,7 @@ to_tensor_transform = transforms.Compose([
 ])
 
 # Create datasets without normalization for computing mean and std
-train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=to_tensor_transform)
+train_dataset_for_mean_std = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=to_tensor_transform)
 data_loader_for_mean_std = DataLoader(train_dataset_for_mean_std, batch_size=64, shuffle=False, num_workers=4)
 
 # Compute mean and std
@@ -150,7 +150,7 @@ transform = transforms.Compose([
 ])
 
 # Create datasets and dataloaders
-base_train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/train_data_{SYMPTOM}_{SEED}.csv', transform=transform)
+base_train_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/combined_train_data_Pus.csv', transform=transform)
 base_test_dataset = StrepDataset(csv_file=f'/data/datasets/rishi/symptom_classification/data/test_data_{SYMPTOM}_{SEED}.csv', transform=transform)
 
 train_dataset = ContrastiveStrepDataset(base_train_dataset)
@@ -165,7 +165,7 @@ test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 """Training Loop"""
 
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(efficientnet.parameters(), lr=0.0009)
+optimizer = optim.Adam(efficientnet.parameters(), lr=0.0001)
 
 '''NUM EPOCHS'''
 num_epochs = 100
@@ -341,8 +341,8 @@ for epoch in range(num_epochs):
         stagnant_epochs = 0
     else:
         stagnant_epochs += 1
-        if stagnant_epochs == patience:
-            break
+    if stagnant_epochs == patience:
+        break
 
 save_path = f'/data/datasets/rishi/symptom_classification/ckpts/best_{model_variant}_{SYMPTOM}_acc_{round(best_accuracy, 3)}_auc_{round(best_auc, 3)}_seed_{SEED}_mining_{MINING}_contrastive.pth'
 if num_epochs > 0:
